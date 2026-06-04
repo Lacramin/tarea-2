@@ -3,8 +3,12 @@ import pandas as pd
 import numpy as np
 import os
 import time
+import random
 
 app = FastAPI()
+
+# Leemos la variable de entorno para saber si debemos fallar a propósito
+SIMULAR_FALLA = os.getenv("SIMULAR_FALLA", "false").lower() == "true"
 
 # ============================================
 # CONFIGURACIÓN DE ZONAS (BOUNDING BOXES REALES)
@@ -64,6 +68,12 @@ def procesar_consulta(
     zona_b: str = Query(None)
 ):
     """Endpoint genérico que redirige según tipo de consulta"""
+    
+    # Inyección de fallos artificiales
+    if SIMULAR_FALLA:
+        if random.random() < 0.40:
+            return {"error": "Falla simulada del backend para probar Kafka"}
+
     if zona_id not in data_por_zona:
         return {"error": "Zona no válida"}
     

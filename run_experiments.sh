@@ -6,32 +6,57 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  AUTOMATIZACIÓN DE 20 EXPERIMENTOS     ${NC}"
+echo -e "${GREEN} INICIANDO BATERIA DE PRUEBAS - TAREA 2 ${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-run_experiment() {
-    local DIST=$1
-    local POLICY=$2
-    local MEMORY=$3
-    local CASO="${DIST}_${POLICY#allkeys-}_${MEMORY}"
+# Parámetros fijos para el caché según Tarea 2
+CACHE_MEMORY="50mb"
+CACHE_POLICY="allkeys-lru"
+
+run_escenario() {
+    local ESCENARIO=$1
+    local DIST=$2
+    local CONSUMIDORES=$3
+    local SIMULAR_FALLA=$4
     
     echo -e "\n${YELLOW}========================================${NC}"
-    echo -e "${YELLOW}  EXPERIMENTO: ${CASO}${NC}"
+    echo -e "${YELLOW} EJECUTANDO: ${ESCENARIO}${NC}"
     echo -e "${YELLOW}========================================${NC}"
     
-    echo " Deteniendo servicios anteriores..."
+    echo "Deteniendo servicios anteriores..."
     docker compose -f docker-compose-temp.yml down -v 2>/dev/null
     docker compose down -v 2>/dev/null
     
-    echo "  Configurando: ${DIST}, ${POLICY}, ${MEMORY}..."
+    echo "Configurando entorno temporal..."
     
     cat > docker-compose-temp.yml << EOF
 services:
+  kafka:
+    image: apache/kafka:3.7.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis-cache:
     image: redis:alpine
     ports:
       - "6379:6379"
-    command: redis-server --maxmemory ${MEMORY} --maxmemory-policy ${POLICY}
+    command: redis-server --maxmemory ${CACHE_MEMORY} --maxmemory-policy ${CACHE_POLICY}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -49,6 +74,8 @@ services:
     build: ./generador_respuestas
     ports:
       - "8002:8000"
+    environment:
+      - SIMULAR_FALLA=${SIMULAR_FALLA}
 
   cache_system:
     build: ./cache_system
@@ -69,89 +96,85 @@ services:
   generador_trafico:
     build: ./generador_trafico
     depends_on:
-      - cache_system
+      - kafka
     environment:
-      - CACHE_URL=http://cache_system:8000
+      - KAFKA_BROKER=kafka:9092
       - DISTRIBUCION=${DIST}
       - TOTAL_CONSULTAS=6000
       - SLEEP_ENTRE_CONSULTAS=0.01
       - CONFIDENCE_VARIATION=random
+
+  consumidor_kafka:
+    build: ./consumidor_kafka
+    depends_on:
+      - kafka
+      - cache_system
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - CACHE_URL=http://cache_system:8000
 EOF
 
-    echo " Levantando servicios..."
-    docker compose -f docker-compose-temp.yml up -d redis-cache metricas generador_respuestas cache_system
+    echo "Levantando infraestructura base (Kafka, Redis, Backend, Metricas)..."
+    docker compose -f docker-compose-temp.yml up -d redis-cache metricas generador_respuestas cache_system kafka
     
-    echo "Esperando a que los servicios estén listos..."
+    echo "Esperando inicializacion de servicios..."
     sleep 15
     
-    echo " Reseteando métricas..."
+    echo "Levantando consumidores (Replicas: ${CONSUMIDORES})..."
+    docker compose -f docker-compose-temp.yml up -d --scale consumidor_kafka=${CONSUMIDORES} consumidor_kafka
+    sleep 5
+    
+    echo "Reseteando metricas..."
     python3 -c "import requests; requests.get('http://localhost:8001/reset')" 2>/dev/null || true
     
-    echo "Iniciando generador de tráfico..."
+    echo "Iniciando generador de trafico..."
     docker compose -f docker-compose-temp.yml up generador_trafico &
     TRAFFIC_PID=$!
     
-    echo "Esperando 6000 consultas (~90 segundos)..."
+    echo "Procesando consultas (~90 segundos)..."
     sleep 90
     
-    echo "Deteniendo generador..."
+    echo "Deteniendo generador y contenedores..."
     docker compose -f docker-compose-temp.yml stop generador_trafico 2>/dev/null
     kill $TRAFFIC_PID 2>/dev/null
     sleep 3
     
-    echo "Descargando métricas..."
+    echo "Descargando registro de metricas..."
     mkdir -p metricas
     python3 -c "
 import requests
 r = requests.get('http://localhost:8001/descargar')
 if r.status_code == 200:
-    with open('metricas/${CASO}.csv', 'wb') as f:
+    with open('metricas/${ESCENARIO}.csv', 'wb') as f:
         f.write(r.content)
-    print('OK')
+    print('Descarga completa.')
 else:
-    print('ERROR:', r.status_code)
+    print('Error en descarga:', r.status_code)
 "
     
-    if [ -f "metricas/${CASO}.csv" ] && [ -s "metricas/${CASO}.csv" ]; then
-        LINEAS=$(wc -l < "metricas/${CASO}.csv")
-        echo -e "${GREEN} Archivo guardado: metricas/${CASO}.csv (${LINEAS} líneas)${NC}"
+    if [ -f "metricas/${ESCENARIO}.csv" ] && [ -s "metricas/${ESCENARIO}.csv" ]; then
+        LINEAS=$(wc -l < "metricas/${ESCENARIO}.csv")
+        echo -e "${GREEN}Archivo guardado: metricas/${ESCENARIO}.csv (${LINEAS} lineas)${NC}"
     else
-        echo -e "${RED} Error: El archivo está vacío o no existe${NC}"
+        echo -e "${RED}Error: El archivo CSV no se genero correctamente.${NC}"
     fi
     
-    echo " Estadísticas rápidas:"
-    python3 -c "import requests; print(requests.get('http://localhost:8001/stats').json())" 2>/dev/null || echo "Servicio no disponible"
+    echo "Estadisticas de la prueba:"
+    python3 -c "import requests; print(requests.get('http://localhost:8001/stats').json())" 2>/dev/null || echo "Estadisticas no disponibles"
     
-    echo " Limpiando para siguiente experimento..."
+    echo "Limpiando entorno..."
     docker compose -f docker-compose-temp.yml down -v 2>/dev/null
     rm -f docker-compose-temp.yml
     sleep 5
 }
 
-echo -e "\n${GREEN} INICIANDO LOTES DE EXPERIMENTOS${NC}\n"
-
-# --- ZIPF + LRU ---
-for MEM in 10mb 25mb 50mb 200mb 500mb; do
-    run_experiment "zipf" "allkeys-lru" $MEM
-done
-
-# --- ZIPF + LFU ---
-for MEM in 10mb 25mb 50mb 200mb 500mb; do
-    run_experiment "zipf" "allkeys-lfu" $MEM
-done
-
-# --- UNIFORM + LRU ---
-for MEM in 10mb 25mb 50mb 200mb 500mb; do
-    run_experiment "uniform" "allkeys-lru" $MEM
-done
-
-# --- UNIFORM + LFU ---
-for MEM in 10mb 25mb 50mb 200mb 500mb; do
-    run_experiment "uniform" "allkeys-lfu" $MEM
-done
+run_escenario "kafka_1_consumer_zipf" "zipf" 1 "false"
+run_escenario "kafka_3_consumers_zipf" "zipf" 3 "false"
+run_escenario "kafka_1_consumer_uniform" "uniform" 1 "false"
+run_escenario "falla_temporal_zipf" "zipf" 1 "true"
+run_escenario "spike_trafico_3_consumers" "zipf" 3 "false"
 
 echo -e "\n${GREEN}========================================${NC}"
-echo -e "${GREEN}  ¡20 EXPERIMENTOS COMPLETADOS!      ${NC}"
+echo -e "${GREEN} PRUEBAS COMPLETADAS ${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo -e "\nArchivos generados en ./metricas/:"
-ls -lh metricas/*.csv 2>/dev/null || echo "No se encontraron archivos CSV"
+ls -lh metricas/*.csv 2>/dev/null
