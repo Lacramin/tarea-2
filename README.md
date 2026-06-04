@@ -6,7 +6,6 @@ Este repositorio contiene la implementación de la Tarea 2 del curso de Sistemas
 
 - Benjamín Arango Reyes
 - Jeremías Olivares
-- Yhean Fernández
 
 ## Tecnologías Utilizadas
 
