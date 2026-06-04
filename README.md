@@ -1,4 +1,4 @@
-# Tarea 2: Sistemas Distribuidos 🚀
+# Tarea 2: Sistemas Distribuidos 
 
 Este repositorio contiene la implementación de la Tarea 2 del curso de Sistemas Distribuidos. El proyecto se centra en la simulación, generación de tráfico y procesamiento de mensajes utilizando una arquitectura basada en microservicios y Apache Kafka.
 
