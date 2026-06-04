@@ -41,4 +41,4 @@ Sigue estas instrucciones para levantar el proyecto y reproducir los experimento
 
 4. **Generar los gráficos de análisis** – Una vez finalizados los experimentos, crea las representaciones visuales ejecutando `python3 generar_graficos.py`. Los gráficos en formato `.png` (distribución del flujo y pérdidas) y un CSV resumen quedarán guardados en `/metricas/graficos_tarea2/`.
 
-5. **Apagar y limpiar el entorno** – El script automatizado ya limpia el entorno tras cada prueba. Si levantaste los servicios manualmente con `docker compose up -d`, puedes detenerlo todo y liberar los puertos con `docker compose down -v`.
+5. **Apagar y limpiar el entorno** – El script automatizado ya limpia el entorno tras cada prueba. Si levantaste los servicios manualmente con `docker compose up -d`, puedes detenerlo todo y liberar los puertos con `docker compose down -v`, de iniciarlo con el automatizador, lanzar un CTRL-C.
